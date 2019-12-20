@@ -1,0 +1,243 @@
+
+import numpy as np
+import matplotlib.pyplot as plt
+import gzip
+# 训练集文件
+train_images = 'MNIST_data/train-images-idx3-ubyte.gz'
+# 训练集标签文件
+train_labels = 'MNIST_data/train-labels-idx1-ubyte.gz'
+
+# 测试集文件
+test_images = 'MNIST_data/t10k-images-idx3-ubyte.gz'
+# 测试集标签文件
+test_labels = 'MNIST_data/t10k-labels-idx1-ubyte.gz'
+IMAGE_SIZE = 28
+NUM_CHANNELS = 1
+PIXEL_DEPTH = 255
+NUM_LABELS = 10
+# Extract the images
+def extract_data(filename, num_images):
+    """Extract the images into a 4D tensor [image index, y, x, channels].
+    Values are rescaled from [0, 255] down to [-0.5, 0.5].
+    """
+    print('Extracting', filename)
+    with gzip.open(filename) as bytestream:
+        bytestream.read(16)
+        buf = bytestream.read(IMAGE_SIZE * IMAGE_SIZE * num_images * NUM_CHANNELS)
+        data = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
+        data = (data - (PIXEL_DEPTH / 2.0)) / PIXEL_DEPTH
+        data = data.reshape(num_images, IMAGE_SIZE, IMAGE_SIZE, NUM_CHANNELS)
+        data = np.reshape(data, [num_images, -1])
+    return data
+def extract_labels(filename, num_images):
+    """Extract the labels into a vector of int64 label IDs."""
+    print('Extracting', filename)
+    with gzip.open(filename) as bytestream:
+        bytestream.read(8)
+        buf = bytestream.read(1 * num_images)
+        labels = np.frombuffer(buf, dtype=np.uint8).astype(np.int64)
+        num_labels_data = len(labels)
+        one_hot_encoding = np.zeros((num_labels_data,NUM_LABELS))
+        one_hot_encoding[np.arange(num_labels_data),labels] = 1
+        one_hot_encoding = np.reshape(one_hot_encoding, [-1, NUM_LABELS])
+    return one_hot_encoding
+train_data = extract_data(train_images, 60000)
+train_labels = extract_labels(train_labels, 60000)
+test_data = extract_data(test_images, 10000)
+test_labels = extract_labels(test_labels, 10000)
+def signmoid(z):
+    s=1/(1+np.exp(-z))
+    return s
+def softmax(x):
+    x_exp = np.exp(x)
+    #如果是列向量，则axis=0
+    x_sum = np.sum(x_exp, axis = 0, keepdims = True)
+    s = x_exp / x_sum
+    return s
+
+def grant_sig(z):
+    return signmoid(z) * (1 - signmoid(z))
+def relu_forward(Z):
+    """
+    :param Z: Output of the activation layer
+    :return:
+    A: output of activation
+    """
+    A = np.maximum(0,Z)
+    return A
+def relu_backward(dA, Z):
+    """
+    :param Z: the input of activation function
+    :param dA:
+    :return:
+    """
+    dout = np.multiply(dA, np.int64(Z > 0)) #J对z的求导
+    return dout
+
+
+def init_w_b(layer_dims):
+            np.random.seed(16)
+            L=len(layer_dims)
+            parameters={}
+            for l in range(1,L):
+                parameters["w" + str(l)]=np.random.randn(layer_dims[l],layer_dims[l-1])*0.1
+                parameters["b" + str(l)]=np.zeros((layer_dims[l],1))
+            return parameters
+def line_forward(x,w,b):
+            z=np.dot(w,x)+b
+            return z
+def forward_propagation(X,parameters):
+            L=len(parameters)//2
+            A=X
+            caches=[]
+            for l in range(1,L):
+                W = parameters["w"+str(l)]
+                B = parameters["b"+str(l)]
+                z= line_forward(A,W,B)
+                caches.append((A,W,B,z))
+                A= relu_forward(z)
+            WL = parameters["w" + str(L)]
+            bL = parameters["b" + str(L)]
+            zL = line_forward(A, WL, bL)
+            caches.append((A, WL, bL, zL))
+
+            AL = softmax(zL)
+            return AL, caches
+def costcpu(AL,Y):
+            m=Y.shape[1]
+            cost=1./m*np.nansum(np.multiply(-np.log(AL),Y))
+            cost = np.squeeze(cost)
+            return cost
+
+def linear_backward(dZ, cache):
+            """
+            :param dZ: Upstream derivative, the shape (n^[l+1],m)
+            :param A: input of this layer
+            :return:
+            """
+            A, W, b, z = cache
+            m=dZ.shape[1]
+
+            dW = np.dot(dZ, A.T)
+            db = np.sum(dZ, axis=1, keepdims=True)
+            da = np.dot(W.T, dZ)
+            return da, dW, db
+
+def backward_propagation(AL, Y, caches):
+
+        m = Y.shape[1]
+        L = len(caches) - 1
+        # calculate the Lth layer gradients
+        dz = 1./m*(AL-Y)
+        da, dWL, dbL = linear_backward(dz, caches[L])
+        gradients = {"dW" + str(L + 1): dWL, "db" + str(L + 1): dbL}
+
+        # calculate from L-1 to 1 layer gradients
+        for l in reversed(range(0, L)):  # L-1,L-3,....,0
+            A, W, b, z = caches[l]
+            # ReLu backward -> linear backward
+            # relu backward
+            dout = relu_backward(da, z)
+            # linear backward
+            da, dW, db = linear_backward(dout, caches[l])
+            # print("========dW" + str(l+1) + "================")
+            # print(dW.shape)
+            gradients["dW" + str(l + 1)] = dW
+            gradients["db" + str(l + 1)] = db
+        return gradients
+
+def update_parameters(parameters, grads, learning_rate):
+        """
+        :param parameters: dictionary,  W,b
+        :param grads: dW,db
+        :param learning_rate: alpha
+        :return:
+        """
+        L = len(parameters) // 2
+        for l in range(L):
+            parameters["w" + str(l + 1)] = parameters["w" + str(l + 1)] - learning_rate * grads["dW" + str(l + 1)]
+            parameters["b" + str(l + 1)] = parameters["b" + str(l + 1)] - learning_rate * grads["db" + str(l + 1)]
+        return parameters
+def predict(X_test,y_test,parameters):
+    """
+    :param X:
+    :param y:
+    :param parameters:
+    :return:
+    """
+    m = y_test.shape[1]
+    Y_prediction = np.zeros((1, m))
+    prob, caches = forward_propagation(X_test,parameters)
+    Y_SS=np.argmax(y_test,axis=0)
+    X_prob = np.argmax(prob, axis=0)
+    count=0
+    for i in range(prob.shape[1]):
+        # Convert probabilities A[0,i] to actual predictions p[0,i]
+        if Y_SS[i]==X_prob[i]:
+            Y_prediction[0, i] = Y_SS[i]
+            count=count+1
+        else:
+            Y_prediction[0, i] = 0
+    #accuracy = 1- np.mean(np.abs(Y_prediction - y_test))
+    accuracy=count/m
+    print("jingquedu:",accuracy)
+    return accuracy
+def L_layer_model(X, Y, layer_dims, learning_rate, num_iterations,X_test,y_test):
+    """
+    :param X:
+    :param Y:
+    :param layer_dims:list containing the input size and each layer size
+    :param learning_rate:
+    :param num_iterations:
+    :return:
+    parameters：final parameters:(W,b)
+    """
+    costs = []
+    # initialize parameters
+    parameters = init_w_b(layer_dims)
+    for i in range(0, num_iterations):
+    #foward propagation
+        AL,caches = forward_propagation(X, parameters)
+        # calculate the cost
+        cost = costcpu(AL, Y)
+        if i % 10 == 0:
+            print("Cost after iteration {}: {}".format(i, cost))
+            costs.append(cost)
+        #backward propagation
+        grads = backward_propagation(AL, Y, caches)
+        #update parameters
+        parameters = update_parameters(parameters, grads, learning_rate)
+
+        if i % 100 == 0:
+            accuracy = predict(X_test, y_test, parameters)
+
+    np.save('test.npy',parameters)
+    print('length of cost')
+    print(len(costs))
+    plt.clf()
+    plt.plot(costs)  # o-:圆形
+    plt.xlabel("iterations(thousand)")  # 横坐标名字
+    plt.ylabel("cost")  # 纵坐标名字
+    plt.show()
+    return parameters
+
+def DNN(X_train, y_train, X_test, y_test, layer_dims, learning_rate= 0.1, num_iterations=1000):
+    parameters = L_layer_model(X_train, y_train, layer_dims, learning_rate, num_iterations,X_test, y_test, )
+    accuracy = predict(X_test,y_test,parameters)
+
+    return accuracy
+
+X_train=train_data.T
+y_train=train_labels.T
+X_test=test_data.T
+y_test=test_labels.T
+ax=DNN(X_train, y_train, X_test, y_test,[784,200,10],learning_rate= 0.01, num_iterations=1000)
+print(ax)
+
+
+
+
+
+
+
+
